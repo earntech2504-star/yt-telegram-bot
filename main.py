@@ -41,16 +41,18 @@ async def handle_any_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Link mil gaya bhai, post kar raha hu: {url}")
 
     info = get_info_from_any_link(url)
-    caption = f"**{info['title']}**\n\n{url}"
+    # FIX: Markdown hata ke HTML lagaya, taaki title ke symbols se error na aaye
+    caption = f"<b>{info['title']}</b>\n\n{url}"
 
     try:
         if info['thumbnail']:
-            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=info['thumbnail'], caption=caption, parse_mode='Markdown')
+            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=info['thumbnail'], caption=caption, parse_mode='HTML')
         else:
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode='Markdown')
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode='HTML')
         await update.message.reply_text("Done ✅ Channel pe post ho gaya.")
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
+        print(f"Post Error: {e}")
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bhai main ready hu. Koi bhi link bhej, main channel pe daal dunga. RSS auto chalta rahega.")
@@ -70,13 +72,14 @@ async def rss_checker(app):
             print(f"RSS Error: {e}")
             await asyncio.sleep(60)
 
+async def post_init(application):
+    # Bot start hote hi RSS checker background me start ho jayega
+    asyncio.create_task(rss_checker(application))
+
 async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_any_link))
-
-    # RSS ko background me chalao
-    asyncio.create_task(rss_checker(app))
 
     print("Bot started... Koi bhi link bhej ke check kar.")
     await app.run_polling()
