@@ -1,5 +1,6 @@
-python-telegram-bot==22.3
+python-telegram-bot==20.8
 feedparser
-python-dotenv
 yt-dlp
 requests
+python-dotenv
+flask
