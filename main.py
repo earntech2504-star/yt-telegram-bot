@@ -4,6 +4,7 @@ import os
 import re
 import requests
 import threading
+import html
 from flask import Flask
 from dotenv import load_dotenv
 from telegram import Update
@@ -41,7 +42,7 @@ def get_ydl_opts():
         'skip_download': True,
         'nocheckcertificate': True,
         'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     }
     cookie_file = get_cookie_file()
     if cookie_file:
@@ -59,88 +60,70 @@ def save_posted_id(video_id):
         f.write(video_id + "\n")
 
 def get_info_from_any_link(url):
-    title = "New Link"
-    thumb = None
-
-    # Common headers for FB/Insta/Web
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9'
-    }
-
-    # 1. YouTube ke liye pehle yt-dlp try karo (best thumbnail)
-    if "youtube.com" in url or "youtu.be" in url:
-        try:
-            with yt_dlp.YoutubeDL(get_ydl_opts()) as ydl:
-                info = ydl.extract_info(url, download=False)
-                return {'title': info.get('title', 'YouTube Video'), 'thumbnail': info.get('thumbnail', None)}
-        except Exception as e:
-            print(f"yt-dlp yt error: {e}")
-
-    # 2. FB / Insta / Website ke liye og:image nikalo
+    # 1. Sabse pehle yt-dlp se try (YT + FB share + Insta ke liye best hai)
     try:
-        r = requests.get(url, headers=headers, timeout=15)
-        html = r.text
+        with yt_dlp.YoutubeDL(get_ydl_opts()) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'New Post')
+            # Title ko clean karo
+            title = html.escape(title)[:200]
+            if "facebook" in url: title = f"🔵 {title}"
+            elif "instagram" in url: title = f"🟣 {title}"
+            return {'title': title, 'thumbnail': info.get('thumbnail', None)}
+    except Exception as e:
+        print(f"yt-dlp fail: {e}")
 
-        # Title logic
-        t_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-        if t_match:
-            raw_title = t_match.group(1).strip()
-            if "facebook" in url: title = f"🔵 {raw_title[:150]}"
-            elif "instagram" in url: title = f"🟣 {raw_title[:150]}"
-            else: title = raw_title[:200]
+    # 2. Agar yt-dlp fail to website se og:image nikalo
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US,en;q=0.9'}
+        r = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+        html_text = r.text
+
+        title = "🔗 New Link"
+        if "facebook.com" in url or "fb.watch" in url: title = "🔵 Facebook Post"
+        elif "instagram.com" in url: title = "🟣 Instagram Post"
         else:
-            if "facebook" in url: title = "🔵 Facebook Post"
-            elif "instagram" in url: title = "🟣 Instagram Reel"
+            t_match = re.search(r'<title>(.*?)</title>', html_text, re.IGNORECASE | re.DOTALL)
+            if t_match: title = html.escape(t_match.group(1).strip()[:200])
 
-        # og:image logic
-        m1 = re.search(r'<meta[^>]*property=[\"\']og:image[\"\'][^>]*content=[\"\']([^\"\']+)[\"\']', html, re.IGNORECASE)
-        m2 = re.search(r'<meta[^>]*content=[\"\']([^\"\']+)[\"\'][^>]*property=[\"\']og:image[\"\']', html, re.IGNORECASE)
-        if m1: thumb = m1.group(1)
-        elif m2: thumb = m2.group(1)
-
-        # FB ka image link me &amp; hota hai usko fix karo
-        if thumb:
-            thumb = thumb.replace("&amp;", "&")
+        thumb = None
+        m1 = re.search(r'property=[\"\']og:image[\"\'][^>]*content=[\"\']([^\"\']+)[\"\']', html_text, re.IGNORECASE)
+        m2 = re.search(r'content=[\"\']([^\"\']+)[\"\'][^>]*property=[\"\']og:image[\"\']', html_text, re.IGNORECASE)
+        if m1: thumb = m1.group(1).replace("&amp;", "&")
+        elif m2: thumb = m2.group(1).replace("&amp;", "&")
 
         return {'title': title, 'thumbnail': thumb}
-
     except Exception as e:
-        print(f"Website parse error: {e}")
-        if "facebook" in url: return {'title': '🔵 Facebook Post', 'thumbnail': None}
-        if "instagram" in url: return {'title': '🟣 Instagram Post', 'thumbnail': None}
-        return {'title': '🔗 New Link', 'thumbnail': None}
+        print(f"OG fail: {e}")
+        return {'title': '🔵 Facebook Post' if 'facebook' in url else '🔗 New Link', 'thumbnail': None}
 
 async def handle_any_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     urls = re.findall(r'http[s]?://\S+', text)
     if not urls: return
-    url = urls[0].split()[0]
-    await update.message.reply_text(f"Link mil gaya bhai, post kar raha hu: {url}")
+    url = urls[0].strip()
+    await update.message.reply_text(f"Link mil gaya, post kar raha hu: {url}")
     info = get_info_from_any_link(url)
-
     caption = f"<b>{info['title']}</b>\n\n{url}"
-
     try:
         if info['thumbnail']:
             await context.bot.send_photo(chat_id=CHANNEL_ID, photo=info['thumbnail'], caption=caption, parse_mode='HTML')
         else:
             await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode='HTML')
-        await update.message.reply_text("Done ✅ Channel pe thumbnail ke saath post ho gaya.")
+        await update.message.reply_text("Done ✅")
     except Exception as e:
-        print(f"Send error: {e}")
-        # Agar photo fail ho to text se bhej de
+        print(f"Send photo fail, sending text: {e}")
         try:
             await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode='HTML')
-            await update.message.reply_text("Done ✅ (photo fail, text post ho gaya)")
+            await update.message.reply_text("Done ✅ (thumbnail block tha, link post ho gaya)")
         except Exception as e2:
             await update.message.reply_text(f"Error: {e2}")
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bhai ready hu! YT / Insta / FB / Website - koi bhi link bhej, thumbnail ke saath channel pe daal dunga!")
+    await update.message.reply_text("Ready hu! YT / FB / Insta / Website koi bhi bhej!")
 
 async def rss_checker(app):
-    print("RSS Checker Started...")
+    print("RSS Started")
     HEADERS = {'User-Agent': 'Mozilla/5.0'}
     while True:
         try:
@@ -153,16 +136,14 @@ async def rss_checker(app):
                     for entry in feed.entries[:2]:
                         video_id = getattr(entry, 'yt_videoid', None) or entry.id
                         if video_id not in posted_ids:
-                            caption = f"<b>{entry.title}</b>\n\n{entry.link}"
+                            caption = f"<b>{html.escape(entry.title)}</b>\n\n{entry.link}"
                             await app.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode='HTML')
                             save_posted_id(video_id)
                             posted_ids.add(video_id)
-                            await asyncio.sleep(5)
                 except Exception as inner_e:
-                    print(f"Feed Error: {inner_e}")
+                    print(inner_e)
             await asyncio.sleep(600)
         except Exception as e:
-            print(f"RSS Error: {e}")
             await asyncio.sleep(60)
 
 async def post_init(application):
@@ -170,7 +151,7 @@ async def post_init(application):
 
 web_app = Flask(__name__)
 @web_app.route('/')
-def home(): return "Bot is Running"
+def home(): return "Bot Running"
 def run_web(): web_app.run(host='0.0.0.0', port=10000)
 threading.Thread(target=run_web, daemon=True).start()
 
