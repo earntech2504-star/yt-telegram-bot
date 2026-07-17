@@ -41,7 +41,7 @@ def get_ydl_opts():
         'skip_download': True,
         'nocheckcertificate': True,
         'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
     cookie_file = get_cookie_file()
     if cookie_file:
@@ -59,57 +59,85 @@ def save_posted_id(video_id):
         f.write(video_id + "\n")
 
 def get_info_from_any_link(url):
-    # 1. FB / Insta - direct post
-    if "facebook.com" in url or "fb.watch" in url:
-        return {'title': '🔵 Facebook Post', 'thumbnail': None}
-    if "instagram.com" in url:
-        return {'title': '🟣 Instagram Reel / Post', 'thumbnail': None}
+    title = "New Link"
+    thumb = None
 
-    # 2. YouTube
+    # Common headers for FB/Insta/Web
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9'
+    }
+
+    # 1. YouTube ke liye pehle yt-dlp try karo (best thumbnail)
     if "youtube.com" in url or "youtu.be" in url:
         try:
             with yt_dlp.YoutubeDL(get_ydl_opts()) as ydl:
                 info = ydl.extract_info(url, download=False)
-                return {'title': info.get('title', 'New Video'), 'thumbnail': info.get('thumbnail', None)}
+                return {'title': info.get('title', 'YouTube Video'), 'thumbnail': info.get('thumbnail', None)}
         except Exception as e:
-            print(f"yt-dlp error: {e}")
+            print(f"yt-dlp yt error: {e}")
 
-    # 3. Koi bhi website - title + og:image
+    # 2. FB / Insta / Website ke liye og:image nikalo
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        r = requests.get(url, headers=headers, timeout=10)
+        r = requests.get(url, headers=headers, timeout=15)
         html = r.text
-        title_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-        title = title_match.group(1).strip()[:200] if title_match else "New Link"
-        thumb = None
+
+        # Title logic
+        t_match = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+        if t_match:
+            raw_title = t_match.group(1).strip()
+            if "facebook" in url: title = f"🔵 {raw_title[:150]}"
+            elif "instagram" in url: title = f"🟣 {raw_title[:150]}"
+            else: title = raw_title[:200]
+        else:
+            if "facebook" in url: title = "🔵 Facebook Post"
+            elif "instagram" in url: title = "🟣 Instagram Reel"
+
+        # og:image logic
         m1 = re.search(r'<meta[^>]*property=[\"\']og:image[\"\'][^>]*content=[\"\']([^\"\']+)[\"\']', html, re.IGNORECASE)
         m2 = re.search(r'<meta[^>]*content=[\"\']([^\"\']+)[\"\'][^>]*property=[\"\']og:image[\"\']', html, re.IGNORECASE)
         if m1: thumb = m1.group(1)
         elif m2: thumb = m2.group(1)
+
+        # FB ka image link me &amp; hota hai usko fix karo
+        if thumb:
+            thumb = thumb.replace("&amp;", "&")
+
         return {'title': title, 'thumbnail': thumb}
+
     except Exception as e:
-        print(f"Website error: {e}")
+        print(f"Website parse error: {e}")
+        if "facebook" in url: return {'title': '🔵 Facebook Post', 'thumbnail': None}
+        if "instagram" in url: return {'title': '🟣 Instagram Post', 'thumbnail': None}
         return {'title': '🔗 New Link', 'thumbnail': None}
 
 async def handle_any_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     urls = re.findall(r'http[s]?://\S+', text)
     if not urls: return
-    url = urls[0]
+    url = urls[0].split()[0]
     await update.message.reply_text(f"Link mil gaya bhai, post kar raha hu: {url}")
     info = get_info_from_any_link(url)
+
     caption = f"<b>{info['title']}</b>\n\n{url}"
+
     try:
         if info['thumbnail']:
             await context.bot.send_photo(chat_id=CHANNEL_ID, photo=info['thumbnail'], caption=caption, parse_mode='HTML')
         else:
             await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode='HTML')
-        await update.message.reply_text("Done ✅ Channel pe post ho gaya.")
+        await update.message.reply_text("Done ✅ Channel pe thumbnail ke saath post ho gaya.")
     except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        print(f"Send error: {e}")
+        # Agar photo fail ho to text se bhej de
+        try:
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=caption, parse_mode='HTML')
+            await update.message.reply_text("Done ✅ (photo fail, text post ho gaya)")
+        except Exception as e2:
+            await update.message.reply_text(f"Error: {e2}")
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bhai ready hu! YT / Insta / FB / Website koi bhi link bhej!")
+    await update.message.reply_text("Bhai ready hu! YT / Insta / FB / Website - koi bhi link bhej, thumbnail ke saath channel pe daal dunga!")
 
 async def rss_checker(app):
     print("RSS Checker Started...")
@@ -131,7 +159,7 @@ async def rss_checker(app):
                             posted_ids.add(video_id)
                             await asyncio.sleep(5)
                 except Exception as inner_e:
-                    print(f"Error: {inner_e}")
+                    print(f"Feed Error: {inner_e}")
             await asyncio.sleep(600)
         except Exception as e:
             print(f"RSS Error: {e}")
